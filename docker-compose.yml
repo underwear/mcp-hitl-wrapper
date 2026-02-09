@@ -1,0 +1,16 @@
+services:
+  mcp-hitl:
+    build: .
+    environment:
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - TG_CHAT_ID=${TG_CHAT_ID}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_TEAM_ID=${SLACK_TEAM_ID}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - ./config/config.example.json:/app/config/config.json:ro
+      - hitl-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  hitl-data:

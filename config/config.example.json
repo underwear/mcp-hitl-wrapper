@@ -1,0 +1,65 @@
+{
+  "server": {
+    "name": "mcp-hitl-wrapper",
+    "version": "1.0.0"
+  },
+
+  "destinations": {
+    "default": {
+      "driver": "telegram",
+      "botToken": "${TG_BOT_TOKEN}",
+      "chatId": "${TG_CHAT_ID}"
+    }
+  },
+
+  "mcps": {
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"
+      },
+      "tools": "*"
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "tools": {
+        "block": ["delete_repository", "delete_branch"]
+      }
+    }
+  },
+
+  "hitl": {
+    "defaultDestination": "default",
+    "defaultTimeout": "3m",
+    "tools": {
+      "slack": {
+        "chat_postMessage": {
+          "timeout": "5m"
+        },
+        "chat_delete": {
+          "timeout": "1m"
+        }
+      },
+      "github": {
+        "create_issue": {}
+      }
+    }
+  },
+
+  "audit": {
+    "enabled": true,
+    "dbPath": "./data/audit.db",
+    "retentionDays": 90
+  },
+
+  "logging": {
+    "level": "info",
+    "format": "json"
+  }
+}

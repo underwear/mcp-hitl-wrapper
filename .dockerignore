@@ -1,0 +1,13 @@
+node_modules
+dist
+data
+.git
+.github
+tests
+coverage
+*.md
+!README.md
+.env*
+!.env.example
+.DS_Store
+TASK.md
