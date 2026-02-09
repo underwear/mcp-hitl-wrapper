@@ -34,12 +34,13 @@
 **Flow:**
 1. Agent вызывает tool (например `slack__chat_postMessage`)
 2. Wrapper парсит префикс → определяет upstream MCP
-3. Проверяет: tool требует HITL?
-   - **Нет** → passthrough, вызываем upstream, возвращаем результат
-   - **Да** → отправляем запрос в Telegram, ждём approve/reject
-4. При approve → вызываем upstream, возвращаем результат
-5. При reject или timeout → возвращаем ошибку агенту
-6. Всё логируем в audit log
+3. Проверяет:
+   - Tool разрешён? (tools config)
+   - Tool требует HITL? (hitl config)
+4. Если HITL → отправляем запрос в Telegram, ждём approve/reject
+5. При approve или passthrough → вызываем upstream, возвращаем результат
+6. При reject/timeout/blocked → возвращаем ошибку агенту
+7. Всё логируем в audit log
 
 ## Tech Stack
 
@@ -78,28 +79,39 @@
 
   "mcps": {
     "slack": {
+      "transport": "stdio",
       "command": "npx",
       "args": ["@modelcontextprotocol/server-slack"],
       "env": {
         "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
         "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"
-      }
+      },
+      "tools": "*"
     },
     "github": {
+      "transport": "stdio",
       "command": "npx",
       "args": ["@modelcontextprotocol/server-github"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "tools": {
+        "block": ["delete_repo", "delete_branch"]
       }
-    }
-  },
-
-  "discovery": {
-    "mode": "auto",
-    "pollInterval": "3h",
-    "notifications": {
-      "newTools": "log",
-      "mcpErrors": "log"
+    },
+    "jira-cloud": {
+      "transport": "sse",
+      "url": "https://mcp.atlassian.com/jira",
+      "headers": {
+        "Authorization": "Bearer ${JIRA_TOKEN}"
+      },
+      "tools": {
+        "allow": ["search", "get_issue", "create_issue", "update_issue"]
+      },
+      "discovery": {
+        "enabled": true,
+        "pollInterval": "3h"
+      }
     }
   },
 
@@ -117,11 +129,11 @@
         }
       },
       "github": {
+        "create_issue": {}
+      },
+      "jira-cloud": {
         "create_issue": {},
-        "delete_repo": {
-          "destination": "security",
-          "timeout": "1m"
-        }
+        "update_issue": {}
       }
     }
   },
@@ -147,6 +159,98 @@ Config поддерживает `${VAR_NAME}` синтаксис — значе�
 - `TG_BOT_TOKEN` — Telegram bot token
 - `TG_CHAT_ID` — Telegram chat ID для HITL
 - Токены для upstream MCPs (SLACK_BOT_TOKEN, GITHUB_TOKEN, etc.)
+
+## Transport Types
+
+### stdio (default)
+
+Локальный MCP сервер — спавним процесс, общаемся через stdin/stdout.
+
+```json
+{
+  "slack": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["@modelcontextprotocol/server-slack"],
+    "env": {
+      "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
+    }
+  }
+}
+```
+
+### sse (Server-Sent Events)
+
+Удалённый MCP сервер — подключаемся по HTTP.
+
+```json
+{
+  "jira-cloud": {
+    "transport": "sse",
+    "url": "https://mcp.atlassian.com/jira",
+    "headers": {
+      "Authorization": "Bearer ${JIRA_TOKEN}"
+    }
+  }
+}
+```
+
+**Defaults:**
+- Если `transport` не указан и есть `command` → `stdio`
+- Если есть `url` → `sse`
+
+## Tools Access Control
+
+Каждый MCP имеет свой `tools` конфиг, определяющий какие tools доступны.
+
+### Режим 1: Всё разрешено (`tools: "*"`)
+
+```json
+{
+  "slack": {
+    "tools": "*"
+  }
+}
+```
+
+- Все tools от этого MCP проксируются
+- HITL применяется только к tools из `hitl.tools.{mcp}`
+- Остальные — passthrough
+
+### Режим 2: Whitelist (`tools: { allow: [...] }`)
+
+```json
+{
+  "jira-cloud": {
+    "tools": {
+      "allow": ["search", "get_issue", "create_issue"]
+    }
+  }
+}
+```
+
+- Только перечисленные tools доступны
+- Новые tools автоматически **blocked**
+- Безопасно для SSE — защита от появления новых опасных tools
+
+### Режим 3: Blocklist (`tools: { block: [...] }`)
+
+```json
+{
+  "github": {
+    "tools": {
+      "block": ["delete_repo", "delete_branch"]
+    }
+  }
+}
+```
+
+- Все tools разрешены, кроме перечисленных
+- Перечисленные → blocked
+
+### Default
+
+Если `tools` не указан → эквивалентно `tools: "*"`.
 
 ## Tool Namespacing
 
@@ -225,33 +329,55 @@ Tool: chat_postMessage
 ...
 ```
 
-## Discovery Mode
+## Discovery
 
-### Auto mode (default)
+Discovery используется для отслеживания изменений в доступных tools у upstream MCP.
 
-При старте и периодически (по `pollInterval`):
-1. Подключаемся к каждому upstream MCP
-2. Вызываем `tools/list`
-3. Кэшируем список tools
-4. Если появились новые — логируем (опционально notify в TG)
+### Когда нужен discovery
 
-Tools не в `hitl.tools` → passthrough без approval.
+- **stdio** — обычно не нужен, ты сам контролируешь версию пакета
+- **sse** — рекомендуется, удалённый сервер может добавлять новые tools
 
-### Whitelist mode
+### Конфигурация per-MCP
 
 ```json
 {
-  "discovery": {
-    "mode": "whitelist"
-  },
-  "whitelist": {
-    "slack": ["chat_postMessage", "channels_list", "reactions_add"],
-    "github": ["create_issue", "list_repos"]
+  "jira-cloud": {
+    "transport": "sse",
+    "url": "...",
+    "tools": {
+      "allow": ["search", "get_issue"]
+    },
+    "discovery": {
+      "enabled": true,
+      "pollInterval": "3h"
+    }
   }
 }
 ```
 
-Только tools из whitelist проксируются. Остальные — ошибка "tool not allowed".
+### Notifications
+
+При обнаружении новых tools — логируем (и опционально notify в TG):
+
+```json
+{
+  "discovery": {
+    "notifications": {
+      "newTools": "log"
+    }
+  }
+}
+```
+
+Значения: `"log"` | `"telegram"` | `"both"` | `"none"`
+
+**Пример лога:**
+```
+[INFO] New tools discovered in "jira-cloud": delete_issue, bulk_update
+```
+
+**Важно:** в режиме whitelist (`tools: { allow: [...] }`) новые tools автоматически blocked. Discovery просто информирует админа.
 
 ## CLI Commands
 
@@ -262,7 +388,7 @@ mcp-hitl serve [--config config.json]
 # Дискавери — показать все tools из upstream MCPs
 mcp-hitl discover [--config config.json]
 
-# Diff — что нового vs текущий whitelist
+# Diff — что нового vs текущий конфиг (для whitelist режима)
 mcp-hitl diff [--config config.json]
 
 # Валидация конфига
@@ -287,7 +413,7 @@ SQLite database с записями:
 | params | TEXT | JSON params |
 | reason | TEXT | X-Reason header |
 | content | TEXT | X-Content header |
-| decision | TEXT | approved / rejected / timeout / passthrough |
+| decision | TEXT | approved / rejected / timeout / passthrough / blocked |
 | decided_by | TEXT | TG username or "system" |
 | latency_ms | INTEGER | Time from request to response |
 
@@ -391,6 +517,7 @@ On tag push (v*):
 - Tool name prefixing/unprefixing
 - HITL timeout logic
 - Audit log queries
+- Tools access control logic (allow/block)
 
 ### Integration tests
 
@@ -398,6 +525,7 @@ On tag push (v*):
 - Full flow: request → HITL → approve → response
 - Timeout flow
 - Passthrough flow (non-HITL tools)
+- Blocked tools flow
 
 Framework: `vitest`
 
@@ -413,8 +541,12 @@ mcp-hitl-wrapper/
 │   │   ├── loader.ts       # Config loading + env substitution
 │   ├── mcp/
 │   │   ├── upstream.ts     # Upstream MCP manager
+│   │   ├── transport/
+│   │   │   ├── stdio.ts    # stdio transport
+│   │   │   ├── sse.ts      # SSE transport
 │   │   ├── discovery.ts    # Tool discovery
 │   │   ├── proxy.ts        # Request proxying
+│   │   ├── access.ts       # Tools access control (allow/block)
 │   ├── hitl/
 │   │   ├── manager.ts      # HITL request manager
 │   │   ├── telegram.ts     # Telegram bot integration
@@ -455,19 +587,45 @@ mcp-hitl-wrapper/
 
 1. [x] Repository created
 2. [ ] Working MCP proxy server
-3. [ ] Telegram HITL integration
-4. [ ] CLI tools (serve, discover, diff, validate, audit)
-5. [ ] Config validation with zod
-6. [ ] Audit log (SQLite)
-7. [ ] Auto-discovery with polling
-8. [ ] Whitelist mode
-9. [ ] Dockerfile
-10. [ ] docker-compose.yml example
-11. [ ] GitHub Actions (CI + Release)
-12. [ ] Unit tests
-13. [ ] Integration tests
-14. [ ] README.md
-15. [ ] Example config
+3. [ ] Transport support (stdio + sse)
+4. [ ] Tools access control (allow/block)
+5. [ ] Telegram HITL integration
+6. [ ] CLI tools (serve, discover, diff, validate, audit)
+7. [ ] Config validation with zod
+8. [ ] Audit log (SQLite)
+9. [ ] Discovery with notifications
+10. [ ] Dockerfile
+11. [ ] docker-compose.yml example
+12. [ ] GitHub Actions (CI + Release)
+13. [ ] Unit tests
+14. [ ] Integration tests
+15. [ ] README.md
+16. [ ] Example config
+
+## Summary: Tool Resolution Flow
+
+```
+Agent calls: slack__chat_postMessage
+
+1. Parse prefix → MCP: "slack", Tool: "chat_postMessage"
+
+2. Check access (mcps.slack.tools):
+   - tools: "*" → allowed
+   - tools: { allow: [...] } → check if in list
+   - tools: { block: [...] } → check if NOT in list
+   
+   If blocked → return error, log "blocked"
+
+3. Check HITL (hitl.tools.slack):
+   - Tool in list → send to Telegram, wait for approval
+   - Tool not in list → passthrough
+
+4. Execute on upstream MCP
+
+5. Log to audit DB
+
+6. Return result to agent
+```
 
 ## Notes
 
@@ -477,15 +635,19 @@ mcp-hitl-wrapper/
 - Default timeout: 3 minutes, configurable per-tool
 - Только две кнопки в TG: Approve / Reject
 - Notifications по умолчанию в log, TG опционально
+- Whitelist mode (`tools: { allow: [...] }`) автоматически блокирует новые tools
 
 ## Questions for Implementation
 
 Если что-то неясно — спрашивай. Но в целом:
-- Начни с базового proxy без HITL
-- Добавь HITL
-- Добавь audit
-- Добавь CLI
-- Добавь Docker + CI
-- Тесты в процессе
+1. Начни с базового proxy (stdio transport)
+2. Добавь tools access control
+3. Добавь HITL
+4. Добавь SSE transport
+5. Добавь discovery
+6. Добавь audit
+7. Добавь CLI
+8. Добавь Docker + CI
+9. Тесты в процессе
 
 Good luck! 🚀
