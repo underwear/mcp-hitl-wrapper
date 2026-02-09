@@ -68,10 +68,12 @@
 
   "destinations": {
     "default": {
+      "driver": "telegram",
       "botToken": "${TG_BOT_TOKEN}",
       "chatId": "${TG_CHAT_ID}"
     },
     "security": {
+      "driver": "telegram",
       "botToken": "${TG_SEC_BOT_TOKEN}",
       "chatId": "${TG_SEC_CHAT_ID}"
     }
@@ -329,6 +331,63 @@ Tool: chat_postMessage
 ...
 ```
 
+## Destination Drivers
+
+Destinations абстрагированы через драйверы — можно использовать разные каналы для доставки HITL запросов.
+
+### Контракт драйвера
+
+```typescript
+interface HitlDriver {
+  // Отправить запрос человеку, вернуть ID сообщения
+  sendRequest(request: HitlRequest): Promise<string>;
+  
+  // Обновить сообщение (таймер, результат)
+  updateMessage(messageId: string, update: MessageUpdate): Promise<void>;
+  
+  // Подписаться на ответы (approve/reject)
+  onResponse(callback: (messageId: string, response: HitlResponse) => void): void;
+  
+  // Cleanup
+  close(): Promise<void>;
+}
+```
+
+### Реализованные драйверы
+
+**telegram** (default) — полная реализация
+```json
+{
+  "driver": "telegram",
+  "botToken": "${TG_BOT_TOKEN}",
+  "chatId": "${TG_CHAT_ID}"
+}
+```
+
+### Задел на будущее (TODO)
+
+**slack** — Block Kit interactive buttons
+```json
+{
+  "driver": "slack",
+  "botToken": "${SLACK_BOT_TOKEN}",
+  "channel": "#approvals"
+}
+```
+
+**discord** — interaction components
+```json
+{
+  "driver": "discord",
+  "botToken": "${DISCORD_BOT_TOKEN}",
+  "channelId": "${DISCORD_CHANNEL_ID}"
+}
+```
+
+### Default driver
+
+Если `driver` не указан → `"telegram"`.
+
 ## Discovery
 
 Discovery используется для отслеживания изменений в доступных tools у upstream MCP.
@@ -549,8 +608,12 @@ mcp-hitl-wrapper/
 │   │   ├── access.ts       # Tools access control (allow/block)
 │   ├── hitl/
 │   │   ├── manager.ts      # HITL request manager
-│   │   ├── telegram.ts     # Telegram bot integration
 │   │   ├── timeout.ts      # Timeout handling
+│   │   ├── drivers/
+│   │   │   ├── interface.ts  # HitlDriver interface
+│   │   │   ├── telegram.ts   # Telegram driver (implemented)
+│   │   │   ├── slack.ts      # Slack driver (TODO)
+│   │   │   ├── discord.ts    # Discord driver (TODO)
 │   ├── audit/
 │   │   ├── db.ts           # SQLite operations
 │   │   ├── queries.ts      # Query helpers
