@@ -28,7 +28,7 @@ Agent calls a tool → wrapper checks access rules → if HITL required, you get
 
 ### Claude Desktop / Cursor
 
-Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
+Add to your MCP client config (`claude_desktop_config.json` or Cursor settings):
 
 ```json
 {
@@ -38,14 +38,17 @@ Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
       "args": ["-y", "mcp-hitl-wrapper", "serve", "--config", "./config.json"],
       "env": {
         "TG_BOT_TOKEN": "your-bot-token",
-        "TG_CHAT_ID": "your-chat-id"
+        "TG_CHAT_ID": "your-chat-id",
+        "SLACK_BOT_TOKEN": "xoxb-..."
       }
     }
   }
 }
 ```
 
-Create `config.json` — see [minimal config](#config-at-a-glance) below.
+This launches the wrapper and passes environment variables to it. The wrapper reads its own `config.json` where `${ENV_VAR}` references are substituted from these values. All variables used in `config.json` must be listed here.
+
+Create `config.json` — see [config example](#config-at-a-glance) below.
 
 ### Docker
 
