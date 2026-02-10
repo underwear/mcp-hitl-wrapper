@@ -60,7 +60,7 @@ export class HitlManager {
     const hitlConfig = this.getHitlConfig(opts.mcpName, opts.toolName);
     const destinationName = hitlConfig?.destination ?? this.config.hitl.defaultDestination;
     const timeoutStr = hitlConfig?.timeout ?? this.config.hitl.defaultTimeout;
-    const timeout = parseDuration(timeoutStr);
+    const timeout = parseDuration(timeoutStr, 1000);
 
     const driver = this.drivers.get(destinationName);
     if (!driver) {
@@ -147,7 +147,11 @@ export class HitlManager {
   }
 
   async rejectAllPending(): Promise<void> {
-    for (const pending of this.pending.values()) {
+    // Snapshot and clear to avoid mutation during iteration
+    const snapshot = [...this.pending.values()];
+    this.pending.clear();
+
+    for (const pending of snapshot) {
       clearTimeout(pending.timer);
       const elapsed = Date.now() - pending.startedAt;
 
@@ -160,7 +164,6 @@ export class HitlManager {
 
       pending.resolve({ decision: 'rejected', decidedBy: 'system (shutdown)' });
     }
-    this.pending.clear();
   }
 
   async close(): Promise<void> {

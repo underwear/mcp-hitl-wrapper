@@ -13,16 +13,19 @@ export function unprefixToolName(prefixedName: string): { mcpName: string; toolN
   };
 }
 
-export function parseDuration(duration: string): number {
+export function parseDuration(duration: string, minMs = 0): number {
   const match = duration.match(/^(\d+)(ms|s|m|h)$/);
   if (!match) throw new Error(`Invalid duration: ${duration}`);
   const [, value, unit] = match;
   const num = parseInt(value, 10);
+  let ms: number;
   switch (unit) {
-    case 'ms': return num;
-    case 's': return num * 1000;
-    case 'm': return num * 60 * 1000;
-    case 'h': return num * 60 * 60 * 1000;
+    case 'ms': ms = num; break;
+    case 's': ms = num * 1000; break;
+    case 'm': ms = num * 60 * 1000; break;
+    case 'h': ms = num * 60 * 60 * 1000; break;
     default: throw new Error(`Unknown unit: ${unit}`);
   }
+  if (ms < minMs) throw new Error(`Duration ${duration} is less than minimum ${minMs}ms`);
+  return ms;
 }

@@ -63,4 +63,11 @@ describe('parseDuration', () => {
     expect(() => parseDuration('3')).toThrow('Invalid duration');
     expect(() => parseDuration('3d')).toThrow('Invalid duration');
   });
+
+  it('should enforce minimum duration when specified', () => {
+    expect(() => parseDuration('0s', 1000)).toThrow('less than minimum');
+    expect(() => parseDuration('500ms', 1000)).toThrow('less than minimum');
+    expect(parseDuration('1s', 1000)).toBe(1000);
+    expect(parseDuration('2s', 1000)).toBe(2000);
+  });
 });

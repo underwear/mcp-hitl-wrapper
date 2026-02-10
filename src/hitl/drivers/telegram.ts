@@ -117,7 +117,11 @@ export class TelegramDriver implements HitlDriver {
       log.error({ err: err.error }, 'Telegram bot error');
     });
 
-    this.bot.start();
+    // bot.start() begins long polling — don't await as it runs until stop()
+    // Handle launch errors that would otherwise be unhandled rejections
+    this.bot.start().catch((err) => {
+      log.error({ err }, 'Telegram bot polling failed');
+    });
     log.info('Telegram HITL driver started');
   }
 

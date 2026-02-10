@@ -38,7 +38,7 @@ const StdioMcpSchema = z.object({
 });
 
 const SseMcpSchema = z.object({
-  transport: z.literal('sse'),
+  transport: z.literal('sse').optional(),
   url: z.string().url(),
   headers: z.record(z.string()).default({}),
   tools: ToolsConfigSchema.default('*'),
@@ -53,13 +53,15 @@ const StreamableHttpMcpSchema = z.object({
   discovery: DiscoveryConfigSchema,
 });
 
-const McpConfigSchema = z.union([StdioMcpSchema, SseMcpSchema, StreamableHttpMcpSchema]).transform((val) => {
-  if (!val.transport) {
-    if ('command' in val) return Object.assign(val, { transport: 'stdio' as const });
-    if ('url' in val) return Object.assign(val, { transport: 'sse' as const });
+// Pre-process to infer transport before union validation
+const McpConfigSchema = z.preprocess((val) => {
+  if (val && typeof val === 'object' && !('transport' in val && (val as Record<string, unknown>).transport)) {
+    const obj = val as Record<string, unknown>;
+    if ('command' in obj) return { ...obj, transport: 'stdio' };
+    if ('url' in obj) return { ...obj, transport: 'sse' };
   }
   return val;
-});
+}, z.union([StdioMcpSchema, SseMcpSchema, StreamableHttpMcpSchema]));
 
 const HitlToolConfigSchema = z.object({
   timeout: DurationSchema.optional(),
@@ -83,16 +85,44 @@ const LoggingConfigSchema = z.object({
   format: z.enum(['json', 'pretty']).default('json'),
 });
 
+const McpNameSchema = z.string().min(1).refine(
+  (name) => !name.includes('__'),
+  { message: 'MCP name must not contain "__" (double underscore) — it is used as a tool name separator' },
+);
+
 export const ConfigSchema = z.object({
   server: z.object({
     name: z.string().default('mcp-hitl-wrapper'),
     version: z.string().default('1.0.0'),
   }).default({}),
   destinations: z.record(z.string(), DestinationSchema).default({}),
-  mcps: z.record(z.string(), McpConfigSchema),
+  mcps: z.record(McpNameSchema, McpConfigSchema),
   hitl: HitlConfigSchema.default({}),
   audit: AuditConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
+}).superRefine((data, ctx) => {
+  // Cross-validate: HITL destination references must exist in destinations
+  const destNames = new Set(Object.keys(data.destinations));
+
+  if (data.hitl.defaultDestination && destNames.size > 0 && !destNames.has(data.hitl.defaultDestination)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `HITL defaultDestination "${data.hitl.defaultDestination}" not found in destinations`,
+      path: ['hitl', 'defaultDestination'],
+    });
+  }
+
+  for (const [mcpName, tools] of Object.entries(data.hitl.tools)) {
+    for (const [toolName, toolConfig] of Object.entries(tools)) {
+      if (toolConfig.destination && !destNames.has(toolConfig.destination)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `HITL destination "${toolConfig.destination}" for ${mcpName}.${toolName} not found in destinations`,
+          path: ['hitl', 'tools', mcpName, toolName, 'destination'],
+        });
+      }
+    }
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

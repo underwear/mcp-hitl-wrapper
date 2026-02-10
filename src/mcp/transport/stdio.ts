@@ -6,13 +6,16 @@ import { getLogger } from '../../utils/logger.js';
 const log = getLogger('transport:stdio');
 
 export async function createStdioClient(name: string, config: StdioMcpConfig): Promise<Client> {
+  // Filter out undefined values from process.env before merging
+  const baseEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) baseEnv[k] = v;
+  }
+
   const transport = new StdioClientTransport({
     command: config.command,
     args: config.args,
-    env: {
-      ...process.env,
-      ...config.env,
-    } as Record<string, string>,
+    env: { ...baseEnv, ...config.env },
   });
 
   const client = new Client({

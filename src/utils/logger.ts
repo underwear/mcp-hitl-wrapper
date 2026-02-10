@@ -1,20 +1,14 @@
 import pino from 'pino';
 
-let logger = pino({
+// Always write to stderr (fd 2) — stdout is used by MCP stdio transport
+const logger = pino({
   level: 'info',
-  transport:
-    process.env.NODE_ENV !== 'production'
-      ? { target: 'pino/file', options: { destination: 2 } }
-      : undefined,
+  transport: { target: 'pino/file', options: { destination: 2 } },
 });
 
 export function configureLogger(opts: { level?: string; format?: string }) {
-  logger = pino({
-    level: opts.level ?? 'info',
-    ...(opts.format === 'pretty'
-      ? { transport: { target: 'pino-pretty', options: { destination: 2 } } }
-      : {}),
-  });
+  // Mutate the existing logger instance so all child loggers inherit the change
+  logger.level = opts.level ?? 'info';
 }
 
 export function getLogger(name?: string) {

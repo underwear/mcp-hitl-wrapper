@@ -1,5 +1,9 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Config } from './config/schema.js';
 import { UpstreamManager } from './mcp/upstream.js';
 import { checkToolAccess } from './mcp/access.js';
@@ -11,14 +15,15 @@ import { getLogger, configureLogger } from './utils/logger.js';
 
 const log = getLogger('server');
 
-type AuditDecision = 'approved' | 'rejected' | 'timeout' | 'passthrough' | 'blocked';
+type AuditDecision = 'approved' | 'rejected' | 'timeout' | 'passthrough' | 'blocked' | 'error';
 
 export class HitlWrapperServer {
-  private mcpServer: McpServer;
+  private server: Server;
   private upstreamManager: UpstreamManager;
   private hitlManager: HitlManager | null = null;
   private auditDb: AuditDb | null = null;
   private discovery: DiscoveryService | null = null;
+  private auditCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private config: Config) {
     configureLogger({
@@ -26,10 +31,10 @@ export class HitlWrapperServer {
       format: config.logging.format,
     });
 
-    this.mcpServer = new McpServer({
-      name: config.server.name,
-      version: config.server.version,
-    });
+    this.server = new Server(
+      { name: config.server.name, version: config.server.version },
+      { capabilities: { tools: {} } },
+    );
 
     this.upstreamManager = new UpstreamManager();
   }
@@ -40,9 +45,8 @@ export class HitlWrapperServer {
     // Connect to upstream MCPs
     await this.upstreamManager.connect(this.config);
 
-    // Start HITL if destinations configured
-    const hasDestinations = Object.keys(this.config.destinations).length > 0 &&
-      Object.values(this.config.destinations).some(d => d.botToken);
+    // Start HITL if destinations configured (BUG 14: check existence, not botToken)
+    const hasDestinations = Object.keys(this.config.destinations).length > 0;
     const hasHitlTools = Object.keys(this.config.hitl.tools).length > 0;
 
     if (hasDestinations && hasHitlTools) {
@@ -56,8 +60,7 @@ export class HitlWrapperServer {
     // Start audit
     if (this.config.audit.enabled) {
       this.auditDb = new AuditDb(this.config.audit.dbPath);
-      // Schedule daily cleanup
-      setInterval(() => {
+      this.auditCleanupTimer = setInterval(() => {
         this.auditDb?.cleanup(this.config.audit.retentionDays);
       }, 24 * 60 * 60 * 1000);
     }
@@ -66,29 +69,28 @@ export class HitlWrapperServer {
     this.discovery = new DiscoveryService(this.upstreamManager, this.config);
     this.discovery.start();
 
-    // Register proxied tools
-    this.registerTools();
+    // Register request handlers (BUG 7: pass full inputSchema from upstream)
+    this.registerHandlers();
 
-    // Start MCP server on stdio
+    // Start on stdio
     const transport = new StdioServerTransport();
-    await this.mcpServer.connect(transport);
+    await this.server.connect(transport);
 
     log.info('mcp-hitl-wrapper server started on stdio');
   }
 
-  private registerTools(): void {
-    const exposedTools = this.upstreamManager.getExposedTools();
-    log.info({ toolCount: exposedTools.length }, `Registering ${exposedTools.length} proxied tools`);
+  private registerHandlers(): void {
+    // List tools: return all exposed tools with their original schemas
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const tools = this.upstreamManager.getExposedTools();
+      return { tools };
+    });
 
-    for (const tool of exposedTools) {
-      this.mcpServer.tool(
-        tool.name,
-        tool.description ?? '',
-        async (args: Record<string, unknown>) => {
-          return this.handleToolCall(tool.name, args);
-        },
-      );
-    }
+    // Call tool: proxy to upstream with HITL and access control
+    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const { name, arguments: args } = request.params;
+      return this.handleToolCall(name, (args ?? {}) as Record<string, unknown>);
+    });
   }
 
   private async handleToolCall(
@@ -137,6 +139,9 @@ export class HitlWrapperServer {
     delete cleanArgs['_reason'];
     delete cleanArgs['_content'];
 
+    // Track who approved for audit (BUG 9: use actual decidedBy)
+    let approvedBy: string | undefined;
+
     // Check if HITL required
     if (this.hitlManager?.requiresApproval(mcpName, toolName)) {
       log.info({ mcpName, toolName }, 'Tool requires HITL approval');
@@ -166,7 +171,8 @@ export class HitlWrapperServer {
           return { content: [{ type: 'text', text: msg }], isError: true };
         }
 
-        log.info({ mcpName, toolName, decidedBy: response.decidedBy }, 'HITL approved');
+        approvedBy = response.decidedBy;
+        log.info({ mcpName, toolName, decidedBy: approvedBy }, 'HITL approved');
       } catch (err) {
         const latency = Date.now() - startTime;
         this.logAudit({
@@ -186,11 +192,11 @@ export class HitlWrapperServer {
     try {
       const result = await this.upstreamManager.callTool(mcpName, toolName, cleanArgs);
       const latency = Date.now() - startTime;
-      const decision = this.hitlManager?.requiresApproval(mcpName, toolName) ? 'approved' : 'passthrough';
+      const decision = approvedBy ? 'approved' : 'passthrough';
 
       this.logAudit({
         mcpName, toolName, params: cleanArgs, decision,
-        decidedBy: decision === 'passthrough' ? 'system' : 'human',
+        decidedBy: approvedBy ?? 'system',
         latency, agent, reason, content,
       });
 
@@ -203,9 +209,10 @@ export class HitlWrapperServer {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
     } catch (err) {
+      // BUG 16: Log 'error' not 'passthrough' for upstream failures
       const latency = Date.now() - startTime;
       this.logAudit({
-        mcpName, toolName, params: cleanArgs, decision: 'passthrough',
+        mcpName, toolName, params: cleanArgs, decision: 'error',
         decidedBy: 'system', latency, agent, reason, content,
       });
 
@@ -224,7 +231,7 @@ export class HitlWrapperServer {
     mcpName: string;
     toolName: string;
     params: Record<string, unknown>;
-    decision: string;
+    decision: AuditDecision;
     decidedBy: string;
     latency: number;
     agent?: string;
@@ -242,7 +249,7 @@ export class HitlWrapperServer {
         params: JSON.stringify(opts.params),
         reason: opts.reason ?? null,
         content: opts.content ?? null,
-        decision: opts.decision as AuditDecision,
+        decision: opts.decision,
         decided_by: opts.decidedBy,
         latency_ms: opts.latency,
       });
@@ -253,6 +260,11 @@ export class HitlWrapperServer {
 
   async stop(): Promise<void> {
     log.info('Shutting down mcp-hitl-wrapper server');
+
+    if (this.auditCleanupTimer) {
+      clearInterval(this.auditCleanupTimer);
+      this.auditCleanupTimer = null;
+    }
 
     this.discovery?.stop();
 
@@ -266,7 +278,7 @@ export class HitlWrapperServer {
       this.auditDb.close();
     }
 
-    await this.mcpServer.close();
+    await this.server.close();
     log.info('Server shutdown complete');
   }
 }

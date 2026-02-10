@@ -14,7 +14,7 @@ export interface AuditRecord {
   params: string;
   reason: string | null;
   content: string | null;
-  decision: 'approved' | 'rejected' | 'timeout' | 'passthrough' | 'blocked';
+  decision: 'approved' | 'rejected' | 'timeout' | 'passthrough' | 'blocked' | 'error';
   decided_by: string;
   latency_ms: number;
 }
@@ -100,7 +100,8 @@ export class AuditDb {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = opts.last ? `LIMIT ${opts.last}` : '';
+    const limit = opts.last ? 'LIMIT ?' : '';
+    if (opts.last) params.push(opts.last);
 
     const sql = `SELECT * FROM audit_log ${where} ORDER BY id DESC ${limit}`;
     return this.db.prepare(sql).all(...params) as AuditRecord[];

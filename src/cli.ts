@@ -28,9 +28,19 @@ program
     const config = loadConfig(configPath);
     const server = new HitlWrapperServer(config);
 
+    // BUG 28: Guard against double shutdown
+    let shuttingDown = false;
     const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       log.info({ signal }, 'Received shutdown signal');
-      await server.stop();
+      try {
+        await server.stop();
+      } catch (err) {
+        // BUG 27: Handle shutdown errors
+        log.error({ err }, 'Error during shutdown');
+        process.exit(1);
+      }
       process.exit(0);
     };
 
@@ -138,7 +148,7 @@ auditCmd
   .option('-n, --last <n>', 'Show last N entries', '20')
   .option('-t, --tool <name>', 'Filter by tool name')
   .option('-m, --mcp <name>', 'Filter by MCP name')
-  .option('--since <duration>', 'Show entries since duration (e.g. 1h, 7d)')
+  .option('--since <duration>', 'Show entries since duration (e.g. 1h, 7d, 30m)')
   .action((opts) => {
     const configPath = resolve(opts.config);
     const config = loadConfig(configPath);
@@ -147,16 +157,26 @@ auditCmd
     try {
       let since: string | undefined;
       if (opts.since) {
-        const match = opts.since.match(/^(\d+)(h|d|m)$/);
-        if (match) {
-          const [, value, unit] = match;
-          const ms = parseInt(value) * (unit === 'h' ? 3600000 : unit === 'd' ? 86400000 : 60000);
-          since = new Date(Date.now() - ms).toISOString();
+        // BUG 13: Validate --since format and error on invalid
+        const match = opts.since.match(/^(\d+)(m|h|d)$/);
+        if (!match) {
+          console.error(`❌ Invalid --since format: "${opts.since}" (expected e.g. "1h", "7d", "30m")`);
+          process.exit(1);
         }
+        const [, value, unit] = match;
+        const ms = parseInt(value) * (unit === 'h' ? 3600000 : unit === 'd' ? 86400000 : 60000);
+        since = new Date(Date.now() - ms).toISOString();
+      }
+
+      // BUG 24: Validate --last
+      const last = parseInt(opts.last);
+      if (isNaN(last) || last <= 0) {
+        console.error(`❌ Invalid --last value: "${opts.last}" (expected positive integer)`);
+        process.exit(1);
       }
 
       const records = db.query({
-        last: parseInt(opts.last),
+        last,
         tool: opts.tool,
         mcp: opts.mcp,
         since,
@@ -203,7 +223,9 @@ auditCmd
           headers.map(h => {
             const val = r[h as keyof typeof r];
             const str = val === null || val === undefined ? '' : String(val);
-            return str.includes(',') || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str;
+            // BUG 12: Also quote strings containing newlines
+            return str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')
+              ? `"${str.replace(/"/g, '""')}"` : str;
           }).join(',')
         );
         output = [headers.join(','), ...rows].join('\n');

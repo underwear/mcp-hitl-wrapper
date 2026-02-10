@@ -109,6 +109,51 @@ describe('ConfigSchema', () => {
     });
     expect(config.mcps.test.tools).toEqual({ allow: ['safe_tool'] });
   });
+
+  it('should reject MCP names containing double underscore', () => {
+    expect(() =>
+      ConfigSchema.parse({
+        mcps: {
+          'my__bad': { command: 'echo' },
+        },
+      }),
+    ).toThrow('double underscore');
+  });
+
+  it('should auto-detect SSE transport when url is present without transport', () => {
+    const config = ConfigSchema.parse({
+      mcps: {
+        remote: {
+          url: 'https://mcp.example.com/api',
+        },
+      },
+    });
+    expect(config.mcps.remote.transport).toBe('sse');
+  });
+
+  it('should auto-detect stdio transport when command is present without transport', () => {
+    const config = ConfigSchema.parse({
+      mcps: {
+        local: { command: 'echo' },
+      },
+    });
+    expect(config.mcps.local.transport).toBe('stdio');
+  });
+
+  it('should reject invalid HITL destination references', () => {
+    expect(() =>
+      ConfigSchema.parse({
+        destinations: {
+          default: { driver: 'telegram', botToken: 'tok', chatId: '123' },
+        },
+        mcps: { test: { command: 'echo' } },
+        hitl: {
+          defaultDestination: 'nonexistent',
+          tools: {},
+        },
+      }),
+    ).toThrow('not found in destinations');
+  });
 });
 
 describe('substituteEnvVars', () => {

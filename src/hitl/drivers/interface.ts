@@ -25,7 +25,7 @@ export interface MessageUpdate {
 export interface HitlDriver {
   sendRequest(request: HitlRequest): Promise<string>;
   updateMessage(messageId: string, update: MessageUpdate): Promise<void>;
-  onResponse(callback: (messageId: string, response: HitlResponse) => void): void;
+  onResponse(callback: (requestId: string, response: HitlResponse) => void): void;
   start(): Promise<void>;
   close(): Promise<void>;
 }
