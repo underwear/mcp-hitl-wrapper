@@ -101,7 +101,7 @@ mcp-hitl serve --config config.json
 ## Features
 
 - **Universal proxy** — wrap any MCP server: stdio, SSE, Streamable HTTP
-- **Telegram approval** — approve/reject with one tap, auto-reject on timeout
+- **Telegram approval** — approve/reject with one tap, auto-reject on timeout (requires a [dedicated bot](docs/configuration.md#destinations))
 - **Access control** — allow-all, whitelist, or blocklist per upstream MCP
 - **Tool namespacing** — automatic `{mcp}__{tool}` prefix prevents collisions
 - **Audit trail** — SQLite log of every call with decision, latency, user

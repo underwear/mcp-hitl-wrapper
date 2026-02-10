@@ -109,6 +109,8 @@ You can define multiple destinations and route different tools to different chat
 | `botToken` | yes | Telegram bot token from [@BotFather](https://t.me/BotFather) |
 | `chatId` | yes | Telegram chat ID (user or group) |
 
+> **Important:** The bot uses long polling to receive callback responses. You must use a **dedicated bot** exclusively for mcp-hitl-wrapper — do not reuse a bot token that is already used by another service (other bots, frameworks, etc.). Two processes cannot long-poll the same bot simultaneously; this will cause both to miss updates and behave unpredictably.
+
 ### `mcps`
 
 Upstream MCP servers to proxy. Keys become namespace prefixes (e.g. `slack` → `slack__chat_postMessage`).
