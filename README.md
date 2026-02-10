@@ -89,7 +89,6 @@ mcp-hitl serve --config config.json
 
   "hitl": {
     "defaultDestination": "tg",
-    "defaultTimeout": "3m",
     "tools": {
       "slack": {
         "chat_postMessage": {},
