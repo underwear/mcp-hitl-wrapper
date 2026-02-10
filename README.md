@@ -1,113 +1,74 @@
 # mcp-hitl-wrapper
 
-Universal MCP proxy with Human-in-the-Loop (HITL) approval flow via Telegram.
+[![CI](https://github.com/underwear/mcp-hitl-wrapper/actions/workflows/ci.yml/badge.svg)](https://github.com/underwear/mcp-hitl-wrapper/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/mcp-hitl-wrapper)](https://www.npmjs.com/package/mcp-hitl-wrapper)
+[![Docker](https://img.shields.io/badge/ghcr.io-mcp--hitl--wrapper-blue)](https://github.com/underwear/mcp-hitl-wrapper/pkgs/container/mcp-hitl-wrapper)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A facade that proxies any number of upstream MCP servers, adding a control layer: certain tools require human approval in Telegram before execution.
+**Human-in-the-loop approval for AI agent tool calls.**
 
-## Features
-
-- **Universal proxy** — connect any MCP server (stdio or SSE) via config
-- **Human-in-the-Loop** — dangerous operations require Telegram approval before execution
-- **Tools access control** — whitelist, blocklist, or allow-all per upstream MCP
-- **Tool namespacing** — automatic `{mcp}__{tool}` prefixing prevents name collisions
-- **Audit log** — full SQLite audit trail of all operations
-- **Discovery** — automatic detection of new tools from upstream MCPs
-- **CLI tools** — serve, validate, discover, diff, audit commands
-- **Docker ready** — multi-stage build, compose file included
-
-## Architecture
+AI agents with MCP access can post messages, create tickets, delete resources — all autonomously. This proxy sits between your agent and upstream MCP servers, intercepting dangerous tool calls and requiring your explicit approval via Telegram before execution.
 
 ```
-┌─────────────┐     ┌─────────────────────┐     ┌─────────────────┐
-│   Agent     │────>│  mcp-hitl-wrapper   │────>│  MCP: Slack     │
-│ (Claude,    │     │                     │────>│  MCP: GitHub    │
-│  Cursor)    │<────│  - Tool proxying    │────>│  MCP: Jira      │
-└─────────────┘     │  - HITL via TG      │────>│  MCP: ...       │
-                    │  - Audit log        │     └─────────────────┘
-                    └──────────┬──────────┘
-                               │
-                               v
-                    ┌─────────────────────┐
-                    │   Telegram Bot      │
-                    │   (HITL approval)   │
-                    └─────────────────────┘
+┌─────────────┐     ┌───────────────────┐     ┌─────────────────┐
+│   Agent     │────>│ mcp-hitl-wrapper  │────>│  MCP: Slack     │
+│ (Claude,    │     │                   │────>│  MCP: GitHub    │
+│  Cursor)    │<────│  proxy + approve  │────>│  MCP: Jira      │
+└─────────────┘     └────────┬──────────┘     └─────────────────┘
+                             │
+                    ┌────────v──────────┐
+                    │   Telegram Bot    │
+                    │   [✅] [❌]      │
+                    └───────────────────┘
 ```
 
-**Flow:**
+Agent calls a tool → wrapper checks access rules → if HITL required, you get a Telegram message with Approve/Reject buttons → result forwarded to agent or error on reject/timeout. Everything is logged.
 
-1. Agent calls tool (e.g. `slack__chat_postMessage`)
-2. Wrapper parses prefix, routes to upstream MCP
-3. Checks access control (allow/block)
-4. If HITL required — sends approval request to Telegram, waits for approve/reject
-5. On approve or passthrough — calls upstream, returns result
-6. On reject/timeout/blocked — returns error to agent
-7. Everything is logged to audit DB
+## Quick start
 
-## Quick Start
-
-### Docker (recommended)
-
-```bash
-# Clone the repo
-git clone https://github.com/underwear/mcp-hitl-wrapper.git
-cd mcp-hitl-wrapper
-
-# Configure
-cp config/config.example.json config/config.json
-cp .env.example .env
-# Edit .env with your tokens
-
-# Run
-docker compose up -d
-```
-
-### From source
-
-```bash
-npm install
-npm run build
-
-# Validate your config
-npx mcp-hitl validate config/config.json
-
-# Start the server
-npx mcp-hitl serve --config config/config.json
-```
-
-### Claude Desktop / Cursor integration
+### Claude Desktop / Cursor
 
 Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
 
 ```json
 {
   "mcpServers": {
-    "hitl-wrapper": {
+    "safe": {
       "command": "npx",
-      "args": ["mcp-hitl", "serve", "--config", "/path/to/config.json"],
+      "args": ["-y", "mcp-hitl-wrapper", "serve", "--config", "./config.json"],
       "env": {
-        "TG_BOT_TOKEN": "your-telegram-bot-token",
-        "TG_CHAT_ID": "your-telegram-chat-id",
-        "SLACK_BOT_TOKEN": "xoxb-...",
-        "GITHUB_TOKEN": "ghp_..."
+        "TG_BOT_TOKEN": "your-bot-token",
+        "TG_CHAT_ID": "your-chat-id"
       }
     }
   }
 }
 ```
 
-## Configuration
+Create `config.json` — see [minimal config](#config-at-a-glance) below.
 
-### Config file
+### Docker
+
+```bash
+docker pull ghcr.io/underwear/mcp-hitl-wrapper:latest
+docker run -v ./config.json:/app/config/config.json:ro \
+  -e TG_BOT_TOKEN=... -e TG_CHAT_ID=... \
+  ghcr.io/underwear/mcp-hitl-wrapper
+```
+
+### npm
+
+```bash
+npm install -g mcp-hitl-wrapper
+mcp-hitl serve --config config.json
+```
+
+## Config at a glance
 
 ```json
 {
-  "server": {
-    "name": "mcp-hitl-wrapper",
-    "version": "1.0.0"
-  },
-
   "destinations": {
-    "default": {
+    "tg": {
       "driver": "telegram",
       "botToken": "${TG_BOT_TOKEN}",
       "chatId": "${TG_CHAT_ID}"
@@ -118,152 +79,45 @@ Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
     "slack": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-slack"],
-      "env": {
-        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
-      },
-      "tools": "*"
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-      },
-      "tools": {
-        "block": ["delete_repository", "delete_branch"]
-      }
+      "env": { "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}" },
+      "tools": { "block": ["users_deletePhoto"] }
     }
   },
 
   "hitl": {
-    "defaultDestination": "default",
-    "defaultTimeout": "3m",
+    "defaultDestination": "tg",
     "tools": {
       "slack": {
-        "chat_postMessage": { "timeout": "5m" },
+        "chat_postMessage": {},
         "chat_delete": { "timeout": "1m" }
-      },
-      "github": {
-        "create_issue": {}
       }
     }
-  },
-
-  "audit": {
-    "enabled": true,
-    "dbPath": "./data/audit.db",
-    "retentionDays": 90
-  },
-
-  "logging": {
-    "level": "info",
-    "format": "json"
   }
 }
 ```
 
-### Environment variables
+`${ENV_VAR}` values are substituted from environment at load time. Full reference: [docs/configuration.md](docs/configuration.md)
 
-Config supports `${VAR_NAME}` syntax — values are substituted from environment at load time.
+## Features
 
-### Transports
+- **Universal proxy** — wrap any MCP server: stdio, SSE, Streamable HTTP
+- **Telegram approval** — approve/reject with one tap, auto-reject on timeout
+- **Access control** — allow-all, whitelist, or blocklist per upstream MCP
+- **Tool namespacing** — automatic `{mcp}__{tool}` prefix prevents collisions
+- **Audit trail** — SQLite log of every call with decision, latency, user
+- **Discovery** — detect new tools from upstream MCPs, auto-block in whitelist mode
+- **CLI toolkit** — validate, discover, diff, audit query/export
+- **Docker ready** — multi-stage image on ghcr.io, compose included
 
-**stdio** (default) — local MCP server spawned as a child process:
+## What approval looks like
 
-```json
-{
-  "slack": {
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-slack"],
-    "env": { "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}" }
-  }
-}
-```
-
-**sse** — remote MCP server via Server-Sent Events:
-
-```json
-{
-  "jira-cloud": {
-    "transport": "sse",
-    "url": "https://mcp.atlassian.com/jira",
-    "headers": { "Authorization": "Bearer ${JIRA_TOKEN}" }
-  }
-}
-```
-
-**streamable-http** — remote MCP server via Streamable HTTP:
-
-```json
-{
-  "remote": {
-    "transport": "streamable-http",
-    "url": "https://mcp.example.com/api",
-    "headers": { "Authorization": "Bearer ${TOKEN}" }
-  }
-}
-```
-
-### Tools access control
-
-| Mode | Config | Behavior |
-|------|--------|----------|
-| Allow all | `"tools": "*"` | All tools proxied (default) |
-| Whitelist | `"tools": { "allow": ["a", "b"] }` | Only listed tools allowed, new tools auto-blocked |
-| Blocklist | `"tools": { "block": ["x", "y"] }` | All tools except listed ones |
-
-### HITL configuration
-
-Tools listed under `hitl.tools.{mcp}` require human approval. Each tool can specify:
-
-- `timeout` — override default timeout (e.g. `"5m"`, `"30s"`)
-- `destination` — override default destination (e.g. `"security"`)
-
-### Discovery
-
-For SSE/remote MCPs, enable discovery to detect new tools:
-
-```json
-{
-  "jira-cloud": {
-    "transport": "sse",
-    "url": "...",
-    "tools": { "allow": ["search"] },
-    "discovery": {
-      "enabled": true,
-      "pollInterval": "3h"
-    }
-  }
-}
-```
-
-In whitelist mode, new tools are automatically blocked. Discovery logs changes for admin awareness.
-
-## Tool namespacing
-
-Tools are exposed to agents with `{mcp}__{tool}` prefixes:
-
-```
-Upstream "slack":  chat_postMessage, channels_list
-Upstream "github": create_issue, list_repos
-
-Exposed to agent:
-  slack__chat_postMessage
-  slack__channels_list
-  github__create_issue
-  github__list_repos
-```
-
-## HITL approval flow
-
-When a HITL-configured tool is called, a Telegram message is sent:
+When a HITL-configured tool is called:
 
 ```
 🔔 HITL Approval Request
 
 Agent: claude-code
-MCP: slack
-Tool: chat_postMessage
+MCP: slack → chat_postMessage
 
 Parameters:
   {"channel": "#general", "text": "Hello team!"}
@@ -273,140 +127,34 @@ Parameters:
 [✅ Approve] [❌ Reject]
 ```
 
-After decision, the message is updated:
+Approve → tool executes, result goes back to agent.
+Reject or timeout → agent gets an error, nothing happens.
 
-```
-✅ Approved by @igor at 21:25:03
-...
-```
-
-Timeout behavior: auto-reject after configured duration (default 3 minutes).
-
-## CLI Reference
+## CLI
 
 ```bash
-# Start the MCP server
-mcp-hitl serve [--config config.json]
-
-# Validate config file
-mcp-hitl validate <config.json>
-
-# Discover all tools from upstream MCPs
-mcp-hitl discover [--config config.json]
-
-# Show tool status diff (allowed/blocked/hitl)
-mcp-hitl diff [--config config.json]
-
-# Query audit log
-mcp-hitl audit list [--last N] [--tool <name>] [--mcp <name>] [--since <duration>]
-
-# Export audit log
-mcp-hitl audit export [--format csv|json] [--output file]
+mcp-hitl serve --config config.json      # start proxy
+mcp-hitl validate config.json            # validate config
+mcp-hitl discover --config config.json   # list upstream tools
+mcp-hitl diff --config config.json       # tool access status
+mcp-hitl audit list --last 20            # query audit log
+mcp-hitl audit export --format csv       # export audit data
 ```
 
-## Audit Log
+## Documentation
 
-SQLite database tracking all tool calls:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| timestamp | TEXT | ISO 8601 |
-| agent | TEXT | Agent name |
-| mcp | TEXT | Upstream MCP name |
-| tool | TEXT | Tool name (without prefix) |
-| params | TEXT | JSON parameters |
-| decision | TEXT | approved / rejected / timeout / passthrough / blocked |
-| decided_by | TEXT | Telegram username or "system" |
-| latency_ms | INTEGER | Request-to-response time |
-
-Retention is configurable (default 90 days), with automatic cleanup.
-
-## Docker
-
-### Build
-
-```bash
-docker build -t mcp-hitl-wrapper .
-```
-
-### docker-compose
-
-```yaml
-services:
-  mcp-hitl:
-    build: .
-    environment:
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
-      - TG_CHAT_ID=${TG_CHAT_ID}
-      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-    volumes:
-      - ./config.json:/app/config/config.json:ro
-      - hitl-data:/app/data
-    restart: unless-stopped
-
-volumes:
-  hitl-data:
-```
+- [Configuration](docs/configuration.md) — full config reference, transports, access control, HITL rules
+- [CLI Reference](docs/cli.md) — all commands and options
+- [Docker](docs/docker.md) — ghcr.io, local build, docker-compose
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Run in dev mode
-npm run dev -- serve --config config/config.example.json
-
-# Run tests
-npm test
-
-# Lint
-npm run lint
-
-# Type check
-npm run typecheck
-
-# Build
-npm run build
+npm install && npm run build
+npm test              # vitest
+npm run lint          # eslint
+npm run typecheck     # tsc
 ```
-
-## Project Structure
-
-```
-src/
-├── cli.ts                # CLI entry point (commander)
-├── server.ts             # MCP server (wrapper)
-├── config/
-│   ├── schema.ts         # Zod config schema
-│   └── loader.ts         # Config loading + env substitution
-├── mcp/
-│   ├── upstream.ts       # Upstream MCP manager
-│   ├── transport/
-│   │   ├── stdio.ts      # stdio transport
-│   │   └── sse.ts        # SSE + Streamable HTTP transport
-│   ├── discovery.ts      # Tool discovery
-│   └── access.ts         # Tools access control
-├── hitl/
-│   ├── manager.ts        # HITL request manager
-│   └── drivers/
-│       ├── interface.ts   # HitlDriver interface
-│       └── telegram.ts    # Telegram driver
-├── audit/
-│   └── db.ts             # SQLite audit log
-└── utils/
-    ├── logger.ts          # Pino logger
-    └── prefix.ts          # Tool name prefixing
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/my-feature`)
-3. Run tests (`npm test`) and lint (`npm run lint`)
-4. Commit your changes
-5. Push to the branch
-6. Open a Pull Request
 
 ## License
 
