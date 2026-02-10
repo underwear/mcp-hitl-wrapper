@@ -28,6 +28,8 @@ RUN mkdir -p /app/data /app/config
 
 VOLUME ["/app/data", "/app/config"]
 
+EXPOSE 8080
+
 # Use tini for proper signal handling
 ENTRYPOINT ["/sbin/tini", "--"]
 

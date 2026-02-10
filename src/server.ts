@@ -4,6 +4,8 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse, Server as HttpServer } from 'node:http';
 import type { Config } from './config/schema.js';
 import { UpstreamManager } from './mcp/upstream.js';
 import { checkToolAccess } from './mcp/access.js';
@@ -18,12 +20,14 @@ const log = getLogger('server');
 type AuditDecision = 'approved' | 'rejected' | 'timeout' | 'passthrough' | 'blocked' | 'error';
 
 export class HitlWrapperServer {
-  private server: Server;
+  private server: Server | null = null;
   private upstreamManager: UpstreamManager;
   private hitlManager: HitlManager | null = null;
   private auditDb: AuditDb | null = null;
   private discovery: DiscoveryService | null = null;
   private auditCleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private httpServer: HttpServer | null = null;
+  private httpTransports: Map<string, InstanceType<typeof import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport>> | null = null;
 
   constructor(private config: Config) {
     configureLogger({
@@ -31,17 +35,10 @@ export class HitlWrapperServer {
       format: config.logging.format,
     });
 
-    this.server = new Server(
-      { name: config.server.name, version: config.server.version },
-      { capabilities: { tools: {} } },
-    );
-
     this.upstreamManager = new UpstreamManager();
   }
 
-  async start(): Promise<void> {
-    log.info('Starting mcp-hitl-wrapper server');
-
+  private async init(): Promise<void> {
     // Connect to upstream MCPs
     await this.upstreamManager.connect(this.config);
 
@@ -68,9 +65,23 @@ export class HitlWrapperServer {
     // Start discovery
     this.discovery = new DiscoveryService(this.upstreamManager, this.config);
     this.discovery.start();
+  }
 
-    // Register request handlers (BUG 7: pass full inputSchema from upstream)
-    this.registerHandlers();
+  private createMcpServer(): Server {
+    const server = new Server(
+      { name: this.config.server.name, version: this.config.server.version },
+      { capabilities: { tools: {} } },
+    );
+    this.registerHandlers(server);
+    return server;
+  }
+
+  async start(): Promise<void> {
+    log.info('Starting mcp-hitl-wrapper server in stdio mode');
+
+    await this.init();
+
+    this.server = this.createMcpServer();
 
     // Start on stdio
     const transport = new StdioServerTransport();
@@ -79,15 +90,84 @@ export class HitlWrapperServer {
     log.info('mcp-hitl-wrapper server started on stdio');
   }
 
-  private registerHandlers(): void {
+  async startHttp(port: number): Promise<void> {
+    log.info({ port }, 'Starting mcp-hitl-wrapper server in HTTP mode');
+
+    await this.init();
+
+    const { createMcpExpressApp } = await import('@modelcontextprotocol/sdk/server/express.js');
+    const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
+    const { isInitializeRequest } = await import('@modelcontextprotocol/sdk/types.js');
+
+    const app = createMcpExpressApp({ host: '0.0.0.0' });
+    const transports = new Map<string, InstanceType<typeof StreamableHTTPServerTransport>>();
+    this.httpTransports = transports;
+
+    app.post('/mcp', async (req: IncomingMessage & { body?: unknown; headers: Record<string, string | string[] | undefined> }, res: ServerResponse) => {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (sessionId && transports.has(sessionId)) {
+        await transports.get(sessionId)!.handleRequest(req, res, (req as unknown as { body: unknown }).body);
+        return;
+      }
+
+      if (!sessionId && isInitializeRequest((req as unknown as { body: unknown }).body)) {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (sid: string) => {
+            transports.set(sid, transport);
+          },
+        });
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid) transports.delete(sid);
+        };
+        const server = this.createMcpServer();
+        await server.connect(transport);
+        await transport.handleRequest(req, res, (req as unknown as { body: unknown }).body);
+        return;
+      }
+
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+        id: null,
+      }));
+    });
+
+    app.get('/mcp', async (req: IncomingMessage & { headers: Record<string, string | string[] | undefined> }, res: ServerResponse) => {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      if (!sessionId || !transports.has(sessionId)) {
+        res.writeHead(400).end('Invalid or missing session ID');
+        return;
+      }
+      await transports.get(sessionId)!.handleRequest(req, res);
+    });
+
+    app.delete('/mcp', async (req: IncomingMessage & { headers: Record<string, string | string[] | undefined> }, res: ServerResponse) => {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      if (!sessionId || !transports.has(sessionId)) {
+        res.writeHead(400).end('Invalid or missing session ID');
+        return;
+      }
+      await transports.get(sessionId)!.handleRequest(req, res);
+    });
+
+    this.httpServer = app.listen(port, () => {
+      log.info({ port }, 'mcp-hitl-wrapper HTTP server listening');
+    });
+  }
+
+  private registerHandlers(server: Server): void {
     // List tools: return all exposed tools with their original schemas
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
       const tools = this.upstreamManager.getExposedTools();
       return { tools };
     });
 
     // Call tool: proxy to upstream with HITL and access control
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       return this.handleToolCall(name, (args ?? {}) as Record<string, unknown>);
     });
@@ -278,7 +358,27 @@ export class HitlWrapperServer {
       this.auditDb.close();
     }
 
-    await this.server.close();
+    // Close HTTP transports if running in HTTP mode
+    if (this.httpTransports) {
+      for (const transport of this.httpTransports.values()) {
+        await transport.close();
+      }
+      this.httpTransports.clear();
+      this.httpTransports = null;
+    }
+
+    // Close HTTP server if running
+    if (this.httpServer) {
+      this.httpServer.close();
+      this.httpServer = null;
+    }
+
+    // Close stdio server if running
+    if (this.server) {
+      await this.server.close();
+      this.server = null;
+    }
+
     log.info('Server shutdown complete');
   }
 }

@@ -23,6 +23,8 @@ program
   .command('serve')
   .description('Start the MCP HITL wrapper server')
   .option('-c, --config <path>', 'Path to config file', 'config.json')
+  .option('-t, --transport <type>', 'Transport type (stdio or http)', 'stdio')
+  .option('-p, --port <number>', 'HTTP port (only for http transport)', '8080')
   .action(async (opts) => {
     const configPath = resolve(opts.config);
     const config = loadConfig(configPath);
@@ -47,7 +49,16 @@ program
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
 
-    await server.start();
+    if (opts.transport === 'http') {
+      const port = parseInt(opts.port, 10);
+      if (isNaN(port) || port <= 0) {
+        console.error(`Invalid port: "${opts.port}"`);
+        process.exit(1);
+      }
+      await server.startHttp(port);
+    } else {
+      await server.start();
+    }
   });
 
 // validate
