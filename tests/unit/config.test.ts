@@ -154,6 +154,30 @@ describe('ConfigSchema', () => {
       }),
     ).toThrow('not found in destinations');
   });
+
+  it('should reject HITL tools configured without destinations', () => {
+    expect(() =>
+      ConfigSchema.parse({
+        mcps: { test: { command: 'echo' } },
+        hitl: {
+          tools: {
+            test: { some_tool: {} },
+          },
+        },
+      }),
+    ).toThrow('no destinations are defined');
+  });
+
+  it('should allow unused defaultDestination when no HITL tools configured', () => {
+    const config = ConfigSchema.parse({
+      mcps: { test: { command: 'echo' } },
+      hitl: {
+        defaultDestination: 'nonexistent',
+        tools: {},
+      },
+    });
+    expect(config.hitl.defaultDestination).toBe('nonexistent');
+  });
 });
 
 describe('substituteEnvVars', () => {

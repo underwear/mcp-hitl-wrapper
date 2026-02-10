@@ -1,0 +1,46 @@
+{
+  "server": {
+    "name": "e2e-test",
+    "version": "1.0.0"
+  },
+  "destinations": {
+    "telegram": {
+      "driver": "telegram",
+      "botToken": "${TG_BOT_TOKEN}",
+      "chatId": "${TG_CHAT_ID}"
+    }
+  },
+  "mcps": {
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "@aashari/mcp-server-atlassian-jira"],
+      "env": {
+        "ATLASSIAN_SITE_NAME": "${JIRA_SITE}",
+        "ATLASSIAN_USER_EMAIL": "${JIRA_EMAIL}",
+        "ATLASSIAN_API_TOKEN": "${JIRA_TOKEN}"
+      },
+      "tools": "*"
+    }
+  },
+  "hitl": {
+    "defaultDestination": "telegram",
+    "defaultTimeout": "3m",
+    "tools": {
+      "jira": {
+        "jira_post": { "timeout": "3m" },
+        "jira_put": { "timeout": "2m" },
+        "jira_patch": { "timeout": "2m" },
+        "jira_delete": { "timeout": "1m" }
+      }
+    }
+  },
+  "audit": {
+    "enabled": true,
+    "dbPath": "./data/e2e-audit.db",
+    "retentionDays": 7
+  },
+  "logging": {
+    "level": "debug",
+    "format": "json"
+  }
+}

@@ -103,8 +103,21 @@ export const ConfigSchema = z.object({
 }).superRefine((data, ctx) => {
   // Cross-validate: HITL destination references must exist in destinations
   const destNames = new Set(Object.keys(data.destinations));
+  const hasHitlTools = Object.values(data.hitl.tools).some(
+    (tools) => Object.keys(tools).length > 0,
+  );
 
-  if (data.hitl.defaultDestination && destNames.size > 0 && !destNames.has(data.hitl.defaultDestination)) {
+  // If HITL tools are configured, destinations must exist
+  if (hasHitlTools && destNames.size === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'HITL tools are configured but no destinations are defined',
+      path: ['destinations'],
+    });
+  }
+
+  // Validate defaultDestination references a valid destination (when destinations exist)
+  if (destNames.size > 0 && !destNames.has(data.hitl.defaultDestination)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: `HITL defaultDestination "${data.hitl.defaultDestination}" not found in destinations`,
@@ -112,6 +125,7 @@ export const ConfigSchema = z.object({
     });
   }
 
+  // Validate per-tool destination references
   for (const [mcpName, tools] of Object.entries(data.hitl.tools)) {
     for (const [toolName, toolConfig] of Object.entries(tools)) {
       if (toolConfig.destination && !destNames.has(toolConfig.destination)) {
