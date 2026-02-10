@@ -23,8 +23,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Data directory for audit DB
-RUN mkdir -p /app/data /app/config
+# Data directory for audit DB (owned by node so the process can write)
+RUN mkdir -p /app/data /app/config && chown -R node:node /app/data /app/config
+
+USER node
 
 VOLUME ["/app/data", "/app/config"]
 
