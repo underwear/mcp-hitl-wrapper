@@ -3,9 +3,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --ignore-scripts \
- && cd node_modules/better-sqlite3 \
- && npx --yes prebuild-install -r napi || node-gyp rebuild --release
+RUN npm ci --ignore-scripts && npm rebuild better-sqlite3
 
 COPY tsconfig.json tsup.config.ts ./
 COPY src/ ./src/
